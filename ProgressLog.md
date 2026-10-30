@@ -119,10 +119,10 @@ closing line.
 
 ### Data checks (do these first, on one game each)
 
-- [ ] Kalshi: trades and 1-minute candles still downloadable for settled games
+- [x] Kalshi: trades and 1-minute candles still downloadable for settled games
       back to the 2025 playoffs; one market per team? (if so, always use home
       YES)
-- [ ] `nba_api`: the live play-by-play endpoint gives UTC times per play
+- [x] `nba_api`: the live play-by-play endpoint gives UTC times per play
       (`timeActual`); check on one 2025–26 game
 - [ ] Bulk play-by-play for 2015–24: scraping is slow and rate-limited; check
       pre-scraped dumps (e.g. `shufinskiy/nba_data` on GitHub)
@@ -145,3 +145,102 @@ closing line.
       scoring plays marked
 - [ ] Bryan: build the training table from 2015–24 play-by-play and fit the
       Stern model
+
+---
+
+## October 29, 2026: Environment setup and API checks (`testing_docs/`)
+
+### What was set up
+
+| Item         | Value                                                                                                                  |
+| ------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| Python       | 3.13 (uv-managed), in `.venv`                                                                                          |
+| Dependencies | `pyproject.toml` + `uv.lock`; teammates run `uv sync`                                                                  |
+| Packages     | pandas, numpy, pyarrow, requests, nba-api, scipy, scikit-learn, matplotlib, python-dotenv, pdfplumber; ipykernel (dev) |
+| Test scripts | `testing_docs/nba_api_demo.py`, `testing_docs/kalshi_api_demo.py`                                                      |
+| `.gitignore` | `__pycache__/`, `.venv/`, `.env`, `data/raw/`, `.DS_Store`                                                             |
+
+`lightgbm` was left out: on a Mac it needs Homebrew's `libomp`. scikit-learn's
+`HistGradientBoostingClassifier` covers the flexible model instead.
+
+### Kalshi findings (`testing_docs/kalshi_api_demo.py`)
+
+- **No API key needed** to read market data (a key is only for trading or your
+  own account). There is a rate limit, so pause between requests when
+  downloading every game.
+- **Use the `/historical/` endpoints.** Markets settled before 2026-08-30 (see
+  `historical/cutoff`) only come back from `historical/markets`,
+  `historical/trades` and `historical/markets/{ticker}/candlesticks`. The normal
+  endpoints return nothing for them.
+- **Two markets per game**, one per team (e.g. `...-IND` = "Indiana wins").
+  Ticker format: `KXNBAGAME-25JUN19OKCIND-IND` = date + away team + home team +
+  the team the market is for.
+- **Prices are strings in dollars** (`"0.3300"`), so convert with `float()`.
+
+Games on Kalshi, by period:
+
+| Period                                               | Games     | Use                            |
+| ---------------------------------------------------- | --------- | ------------------------------ |
+| 2025 playoffs (Apr–Jun 2025)                         | 86        | Tuning                         |
+| 2025–26 preseason (Oct 10–20, 2025)                  | 43        | Drop                           |
+| 2025–26 regular season (Oct 21, 2025 – Apr 12, 2026) | 1,233     | Tuning (to Jan), test (Feb on) |
+| 2026 play-in and playoffs                            | 87        | Test                           |
+| **Total**                                            | **1,449** |                                |
+
+- 1,446 games settled with exactly one team YES. **3 games settled at a
+  fractional price** instead of 0/1 and should be dropped:
+  `KXNBAGAME-26JAN08MIACHI` (0.69/0.31), `KXNBAGAME-26JAN25DALMIL` (0.56/0.44),
+  `KXNBAGAME-26JAN25DENMEM` (0.62/0.38).
+- By market close date: about 854 games in the tuning period (2025 playoffs to
+  Jan 2026, including the preseason) and 595 in the test period (Feb–Jun 2026).
+
+One game in detail, 2025 Finals Game 6 (`KXNBAGAME-25JUN19OKCIND-IND`):
+
+| Data             | What came back                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| 1-minute candles | 171 over the game; YES bid/ask open/high/low/close, volume, open interest                                          |
+| Trades           | 22,604 (about 11.8M contracts); time to the millisecond, YES price, size, taker side; newest first, 1,000 per page |
+| Price path       | Indiana mid 0.34 at tip-off, 0.53 at 01:30 UTC, 0.87 at 02:00, 0.995 at 03:00                                      |
+| Result           | Indiana YES; market closed 03:21 UTC                                                                               |
+
+### `nba_api` findings (`testing_docs/nba_api_demo.py`)
+
+- **No API key needed**; it's a pip package.
+- **Column names are uppercase** (`TEAM_NAME`, `GP`, `PLUS_MINUS`, `GAME_ID`)
+  and must match exactly when selecting columns.
+- `LeagueDashTeamStats` gives **season totals** by default (`PTS`,
+  `PLUS_MINUS`); pass `per_mode_detailed="PerGame"` for per-game numbers.
+  2025–26 best record: OKC 64–18 (+914 total, about +11 per game).
+- `LeagueGameFinder`: 1,230 regular-season games in 2025–26, **2 rows per game**
+  (one per team). In `MATCHUP`, `vs.` = home team, `@` = away team.
+- **Live play-by-play** (`nba_api.live.nba.endpoints.playbyplay`) has a UTC
+  `timeActual` per play, to 0.1 s:
+
+| Game                                   | Plays | First → last play (UTC)     | Final           |
+| -------------------------------------- | ----- | --------------------------- | --------------- |
+| 2025 Finals Game 6 (`0042400406`)      | 598   | 00:40 → 03:11, Jun 20, 2025 | IND 108, OKC 91 |
+| CHA @ NYK, Apr 12, 2026 (`0022501190`) | 546   | 22:11 → 00:16               | CHA 110, NYK 96 |
+| 2015–16 opener (`0021500001`)          | —     | Returned nothing            | —               |
+
+- **The live feed doesn't cover old seasons.** Training data for 2015–24 has to
+  come from the stats endpoints or a pre-scraped dump (`shufinskiy/nba_data` on
+  GitHub, updated July 2026). Training only needs game clock and score, not UTC
+  time, so this is fine.
+- **The game clock is an ISO duration** (`PT11M44.00S`), so it needs parsing to
+  seconds.
+
+### Kalshi and `nba_api` line up
+
+For 2025 Finals Game 6, the play-by-play ends at 03:11 UTC with Indiana winning
+108–91, and the Kalshi Indiana market closed at 03:21 UTC and settled YES. The
+two sources can be joined on time, at least for this game.
+
+### Next steps
+
+- [ ] One-game prototype: Kalshi mid and Stern p against UTC time for 2025
+      Finals Game 6, scoring plays marked
+- [ ] Download 2015–24 play-by-play (`shufinskiy/nba_data`) and build the
+      training table
+- [ ] Tell ACL and Arjav: run `uv sync`; use Kalshi's `/historical/` endpoints;
+      drop preseason and the 3 fractional-price games
+- [ ] Remaining data checks: The Odds API (paid plan?), Polymarket, injury PDFs
