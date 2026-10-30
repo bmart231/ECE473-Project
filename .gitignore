@@ -1,0 +1,15 @@
+# python
+__pycache__/
+.ipynb_checkpoints/
+
+# venv (rebuild with `uv sync`)
+.venv/
+
+# API keys
+.env
+
+# data (in the future, none atm)
+data/raw/
+
+# macOS
+.DS_Store
