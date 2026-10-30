@@ -1,0 +1,23 @@
+[project]
+name = "ece473-project"
+version = "0.1.0"
+description = "Domain-specialized market making for NBA prediction markets (ECE 473)"
+requires-python = ">=3.13" # this is the most stable, at least for me - Bryuan
+dependencies = [
+    # add more here as we scale
+    "matplotlib>=3.11.2",
+    "nba-api>=1.12.0",
+    "numpy>=2.5.4",
+    "pandas>=3.1.0",
+    "pdfplumber>=0.11.10",
+    "pyarrow>=26.0.0",
+    "python-dotenv>=1.2.4",
+    "requests>=2.34.2",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+]
