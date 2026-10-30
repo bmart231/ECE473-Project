@@ -14,12 +14,12 @@ quotes around a calibrated live win probability. Test whether it beats a market
 maker quoting around the market mid on out-of-sample calibration and PnL. Full
 proposal: `ECE473_Project.pdf`.
 
-| Person          | Responsibilities                                                       |
-| --------------- | ---------------------------------------------------------------------- |
-| Angel Chang Liu | Market data scrapers and matching; fill simulation and trading metrics |
-| Arjav Akkole    | Play-by-play alignment, Elo and pregame prior; baselines               |
-| Bryan Martinez  | Live win probability model and calibration; quoting rule and tuning    |
-| All             | Backtest design, reports and presentation                              |
+| Person   | Responsibilities                                                       |
+| -------- | ---------------------------------------------------------------------- |
+| ACL      | Market data scrapers and matching; fill simulation and trading metrics |
+| Arjav    | Play-by-play alignment, Elo and pregame prior; baselines               |
+| Bryan    | Live win probability model and calibration; quoting rule and tuning    |
+| Everyone | Backtest design, reports and presentation                              |
 
 ### Data
 
@@ -58,6 +58,8 @@ The work splits into two layers that share one backtest:
 
 **Forecast models** (simplest first; keep a model only if it beats the one
 before it on validation log loss):
+
+**Big Math**
 
 1. Stern Brownian motion: P = Φ((m + μτ) / (σ√τ)), with m = home margin, τ =
    fraction of the game left, μ = σ·Φ⁻¹(p_pre). Only σ is fitted.
@@ -132,10 +134,8 @@ closing line.
 
 ### Proposal fixes
 
-- [ ] Page 1 Motivation says "We study this in weather markets"; the rest is
+- [ ] Page 1 Motivation says "We study this in weather markets" -> the rest is
       about the NBA
-- [ ] LaTeX setup text ("[10pt]article [margin=0.6in]geometry …") is printed on
-      page 1
 
 ### Next steps
 
