@@ -73,6 +73,22 @@ def report(name: str, rows: pd.DataFrame, sigma: float) -> None:
     p_base = rows["p_pre"].to_numpy()  # never updates during the game
     print(f"{name:<6} live:     log loss {log_loss(y, p_live):.4f}  Brier {brier(y, p_live):.4f}")
     print(f"{name:<6} baseline: log loss {log_loss(y, p_base):.4f}  Brier {brier(y, p_base):.4f}")
+    
+    
+# function to see whether the sigma values found are actaully well calibrated
+def calibration(rows: pd.DataFrame, sigma: float) -> None:
+    """Predicted probability vs actual home win rate, by quarter and probability bucket."""
+    df = rows.assign(
+        p=stern.stern_p(rows["margin"], rows["secs_left"], rows["p_pre"], sigma),
+        quarter=4 - (rows["secs_left"] // 720).clip(upper=3).astype(int),
+    )
+    df["p_bin"] = pd.cut(df["p"], np.linspace(0, 1, 11).tolist(), include_lowest=True)
+
+    table = df.groupby(["quarter", "p_bin"], observed=True).agg(
+        n=("p", "size"), predicted=("p", "mean"), actual=("home_won", "mean")
+    )
+    table["gap"] = table["actual"] - table["predicted"]
+    print(table.round(3).to_string())
 
 def main() -> None:
     seasons = TRAIN_SEASONS + VALID_SEASONS
@@ -96,6 +112,9 @@ def main() -> None:
     print()
     report("train", train, sigma)
     report("valid", valid, sigma)
+    
+    print()
+    calibration(valid, sigma)
 
 
 if __name__ == "__main__":
