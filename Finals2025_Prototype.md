@@ -1,6 +1,6 @@
 # One-game prototype: 2025 Finals Game 6
 
-Working notes for building `src/prototype_g6.py`.
+Working notes for building `src/prototype_game_6.py`.
 
 **Goal:** one chart with two lines against real (UTC) time for 2025 Finals Game
 6, Oklahoma City at Indiana:
