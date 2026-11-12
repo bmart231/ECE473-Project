@@ -37,25 +37,26 @@ def load_kalshi_mid() -> pd.DataFrame:
     """1-minute candles for KALSHI_TICKER -> table with columns: time, mid.
 
     Steps:
-      1. GET {KALSHI_BASE}/historical/markets/{KALSHI_TICKER}/candlesticks
-         with params start_ts, end_ts (use to_ts) and period_interval=1
-      2. the list is under the "candlesticks" key
-      3. for each candle:
-           time = end_period_ts (unix seconds) as a UTC datetime
-           mid  = (float(yes_bid close) + float(yes_ask close)) / 2
-      4. return pd.DataFrame with columns ["time", "mid"]
+    1. GET {KALSHI_BASE}/historical/markets/{KALSHI_TICKER}/candlesticks
+        with params start_ts, end_ts (use to_ts) and period_interval=1
+    2. the list is under the "candlesticks" key
+    3. for each candle:
+        time = end_period_ts (unix seconds) as a UTC datetime
+        mid  = (float(yes_bid close) + float(yes_ask close)) / 2
+    4. return pd.DataFrame with columns ["time", "mid"]
 
     Check: about 170 rows, mid ends near 1.00.
     """
+    
     
 
 def clock_to_secs_left(period: int, clock: str) -> float:
     """Period 1, 'PT11M44.00S' -> 2864.0 seconds left in regulation.
 
     The live feed's clock is an ISO duration, not '11:44':
-      minutes = the number between 'PT' and 'M'
-      seconds = the number between 'M' and 'S'
-      secs_left = (4 - period) * PERIOD_SECS + minutes * 60 + seconds
+    minutes = the number between 'PT' and 'M'
+    seconds = the number between 'M' and 'S'
+    secs_left = (4 - period) * PERIOD_SECS + minutes * 60 + seconds
     """
     # TODO
     raise NotImplementedError
@@ -65,12 +66,12 @@ def load_plays() -> pd.DataFrame:
     """Live play-by-play for GAME_ID -> table with columns: time, margin, secs_left.
 
     Steps:
-      1. actions = playbyplay.PlayByPlay(GAME_ID, timeout=30).get_dict()["game"]["actions"]
-      2. put them in a DataFrame; keep timeActual, period, clock, scoreHome, scoreAway
-      3. time      = pd.to_datetime(timeActual, utc=True)
-         margin    = int(scoreHome) - int(scoreAway)
-         secs_left = clock_to_secs_left(period, clock) for each row
-      4. return the columns ["time", "margin", "secs_left"]
+    1. actions = playbyplay.PlayByPlay(GAME_ID, timeout=30).get_dict()["game"]["actions"]
+    2. put them in a DataFrame; keep timeActual, period, clock, scoreHome, scoreAway
+    3. time      = pd.to_datetime(timeActual, utc=True)
+        margin    = int(scoreHome) - int(scoreAway)
+        secs_left = clock_to_secs_left(period, clock) for each row
+    4. return the columns ["time", "margin", "secs_left"]
 
     Check: last row has margin +17 and secs_left 0.
     """
@@ -97,11 +98,11 @@ def plot(kalshi: pd.DataFrame, plays: pd.DataFrame) -> None:
     """Both series against UTC time on one chart.
 
     Steps:
-      1. fig, ax = plt.subplots(figsize=(11, 5))
-      2. Kalshi: ax.plot(time, mid, label="Kalshi mid")
-      3. model:  ax.plot(time, p, drawstyle="steps-post", label="Stern model")
-      4. y-axis from 0 to 1, axis labels, title, legend
-      5. plt.show()   (or fig.savefig(...) to keep a copy)
+    1. fig, ax = plt.subplots(figsize=(11, 5))
+    2. Kalshi: ax.plot(time, mid, label="Kalshi mid")
+    3. model:  ax.plot(time, p, drawstyle="steps-post", label="Stern model")
+    4. y-axis from 0 to 1, axis labels, title, legend
+    5. plt.show()   (or fig.savefig(...) to keep a copy)
     """
     # TODO
     raise NotImplementedError
