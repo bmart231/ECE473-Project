@@ -13,3 +13,6 @@ data/raw/
 
 # macOS
 .DS_Store
+
+# per-game download cache for src/batch_compare.py (rebuilt on demand)
+data/processed/cache/

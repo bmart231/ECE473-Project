@@ -32,7 +32,7 @@ decisions: `ProgressLog.md`.
   live model cuts log loss from 0.61 (Elo alone) to 0.46 and is well calibrated
   (`sigma_results.md`).
 - **First market test:** 2025 Finals Game 6, model vs Kalshi. They track closely
-  (average gap about 2.6 cents), but the model trusts leads more than the market
+  (average gap about 3 cents), but the model trusts leads more than the market
   does.
 
 ## Repo layout

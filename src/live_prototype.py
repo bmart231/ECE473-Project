@@ -120,6 +120,14 @@ def elo_priors() -> pd.Series:
     return prior.build_prior(games).set_index("game_id")["p_pre"]
 
 
+def kalshi_tipoff_mid(kalshi: pd.DataFrame, tip_off: pd.Timestamp) -> float:
+    """Last Kalshi mid at or before tip-off: the market's own pregame P(home wins)."""
+    before = kalshi[kalshi["time"] <= tip_off]
+    if before.empty:
+        raise ValueError("no Kalshi quote before tip-off")
+    return float(before["mid"].iloc[-1])
+
+
 def pregame_prior(game_id: str, kalshi: pd.DataFrame, tip_off: pd.Timestamp) -> tuple[float, str]:
     """(p_pre, where it came from) for one game.
 
@@ -135,10 +143,10 @@ def pregame_prior(game_id: str, kalshi: pd.DataFrame, tip_off: pd.Timestamp) -> 
     if game_id in priors.index:
         return float(priors[game_id]), "Elo"
 
-    before = kalshi[kalshi["time"] <= tip_off]
-    if before.empty:
-        raise ValueError(f"no Elo prior for {game_id} and no Kalshi quote before tip-off; pass p_pre")
-    return float(before["mid"].iloc[-1]), "Kalshi mid at tip-off"
+    try:
+        return kalshi_tipoff_mid(kalshi, tip_off), "Kalshi mid at tip-off"
+    except ValueError:
+        raise ValueError(f"no Elo prior for {game_id} and no Kalshi quote before tip-off; pass p_pre") from None
 
 
 # ---------- step 4: put it together ----------
@@ -162,8 +170,10 @@ def compare_game(game_id: str, ticker: str, p_pre: float | None = None,
     plays["p"] = stern.stern_p(plays["margin"].to_numpy(), plays["secs_left"].to_numpy(), p_pre, sigma)
     check_game(kalshi, plays, p_pre)
 
-    # for each Kalshi minute, the model's value as of the most recent play
-    state = plays.sort_values("time", kind="stable")
+    # for each Kalshi minute, the model's value as of the most recent play. Feed order is game
+    # order (check_game), so a timestamp that steps back is clamped to the play before it
+    # rather than re-sorted, which would put that play ahead of earlier ones.
+    state = plays.assign(time=plays["time"].cummax())
     in_game = kalshi[kalshi["time"].between(tip_off, buzzer)]
     table = pd.merge_asof(in_game, state, on="time", direction="backward")
     table["gap"] = table["p"] - table["mid"]
@@ -180,12 +190,17 @@ def check_game(kalshi: pd.DataFrame, plays: pd.DataFrame, p_pre: float) -> None:
     assert plays["margin"].iloc[-1] != 0, "game ends tied: play-by-play is incomplete"
     assert abs(plays["p"].iloc[0] - p_pre) < 1e-6, "model does not start at the prior"
     assert plays["p"].iloc[-1] == float(home_won), "model does not end at 0 or 1"
-    # timeActual can step back ~1 s where a sub is logged between free throws; nothing bigger
-    assert plays["time"].diff().dt.total_seconds().min() > -5, "play timestamps jump backwards"
-    # the market should end agreeing with the result. If it ends on the wrong side, the
-    # ticker is for a different game or ticker_is_home got the side wrong.
+    # feed order is game order: the clock never runs back within a period, periods never go back
+    assert plays["period"].is_monotonic_increasing, "periods out of order"
+    assert (plays.groupby("period")["secs_left"].diff().dropna() <= 0).all(), "game clock runs backwards"
+    # timeActual is logged by hand and can step back: usually under a second, seen up to
+    # ~2 min (a sub or violation logged late around free throws). compare_game keeps feed
+    # order and clamps those, so only a gross error (several minutes) fails here.
+    assert plays["time"].diff().dt.total_seconds().min() > -300, "play timestamps jump back by minutes"
+    # a flipped side or wrong game ends confidently on the losing side. Only that is checked:
+    # one-sided quotes are dropped, so the last two-sided quote can predate a late swing.
     final_mid = kalshi["mid"].iloc[-1]
-    assert (final_mid > 0.9) == home_won and (final_mid < 0.1) == (not home_won), (
+    assert final_mid > 0.1 if home_won else final_mid < 0.9, (
         f"Kalshi ends at {final_mid:.3f} but home_won is {home_won}: wrong ticker or wrong side"
     )
 

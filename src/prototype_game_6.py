@@ -48,14 +48,18 @@ def candles_to_mid(candles: list[dict]) -> pd.DataFrame:
     """Raw Kalshi candles -> table with columns: time (UTC), mid.
 
     Prices come back as dollar strings ('0.3300'). A minute with no bid or no ask
-    has no mid, so that row is dropped rather than guessed.
+    has no mid, so that row is dropped rather than guessed. Kalshi trades 0.01-0.99, so a
+    bid of 0.00 or an ask of 1.00 means that side of the book is empty, not a real quote.
+    That happens late in decided games and after settlement, when the book is cleared
+    (bid 0 / ask 1 would otherwise read as a mid of 0.5).
     """
     df = pd.DataFrame({
         "time": pd.to_datetime([c["end_period_ts"] for c in candles], unit="s", utc=True),
         "bid": pd.to_numeric([c["yes_bid"].get("close") for c in candles], errors="coerce"),
         "ask": pd.to_numeric([c["yes_ask"].get("close") for c in candles], errors="coerce"),
     })
-    df["mid"] = (df["bid"] + df["ask"]) / 2
+    two_sided = (df["bid"] > 0) & (df["ask"] < 1)
+    df["mid"] = ((df["bid"] + df["ask"]) / 2).where(two_sided)
     return df.dropna(subset=["mid"])[["time", "mid"]].reset_index(drop=True)
 
 
@@ -166,17 +170,19 @@ def run_unit_tests() -> None:
     assert clock_to_secs_left(4, "PT00M00.00S") == 0
     assert _raises(ValueError, clock_to_secs_left, 1, "11:44")
 
-    # candles: strings -> floats, missing quote row dropped, times in UTC
+    # candles: strings -> floats, times in UTC; missing quotes and empty book sides dropped
     candles = [
         {"end_period_ts": 1750379400, "yes_bid": {"close": "0.3300"}, "yes_ask": {"close": "0.3500"}},
         {"end_period_ts": 1750379460, "yes_bid": {"close": None}, "yes_ask": {"close": "0.3600"}},
         {"end_period_ts": 1750379520, "yes_bid": {}, "yes_ask": {"close": "0.3600"}},
-        {"end_period_ts": 1750379580, "yes_bid": {"close": "0.9900"}, "yes_ask": {"close": "1.0000"}},
+        {"end_period_ts": 1750379580, "yes_bid": {"close": "0.9800"}, "yes_ask": {"close": "0.9900"}},
+        {"end_period_ts": 1750379640, "yes_bid": {"close": "0.9900"}, "yes_ask": {"close": "1.0000"}},
+        {"end_period_ts": 1750379700, "yes_bid": {"close": "0.0000"}, "yes_ask": {"close": "1.0000"}},
     ]
     kalshi = candles_to_mid(candles)
     assert list(kalshi.columns) == ["time", "mid"]
     assert len(kalshi) == 2
-    assert np.allclose(kalshi["mid"], [0.34, 0.995])
+    assert np.allclose(kalshi["mid"], [0.34, 0.985])
     assert str(kalshi["time"].dt.tz) == "UTC"
     assert kalshi["time"].iloc[0] == pd.Timestamp("2025-06-20T00:30:00Z")
 
@@ -204,7 +210,7 @@ def run_unit_tests() -> None:
     assert P_PRE < modeled["p"].iloc[1] < 1
     assert modeled["p"].iloc[-1] == 1.0
 
-    print("unit tests: all pass")
+    print("unit tests: all pass ")
 
 
 def main() -> None:
@@ -215,7 +221,8 @@ def main() -> None:
           f"first p {plays['p'].iloc[0]:.3f}, last p {plays['p'].iloc[-1]:.3f}")
 
     # live-data checks from Finals2025_Prototype.md
-    assert 160 <= len(kalshi) <= 175, len(kalshi)
+    # 171 candles; the last ~40 sat at a one-sided 0.99/1.00 (no real mid) and are dropped
+    assert 120 <= len(kalshi) <= 175, len(kalshi)
     assert kalshi["mid"].iloc[-1] > 0.95
     assert plays["margin"].iloc[-1] == 17 and plays["secs_left"].iloc[-1] == 0
     assert abs(plays["p"].iloc[0] - P_PRE) < 1e-6
@@ -224,8 +231,9 @@ def main() -> None:
     # where a sub was logged between free throws, so allow that but nothing bigger
     assert plays["secs_left"].is_monotonic_decreasing
     assert plays["time"].diff().dt.total_seconds().min() > -5
-    # both series cover the same evening (a 4-hour offset means a time-zone bug)
-    assert kalshi["time"].min() <= plays["time"].min() and plays["time"].max() <= kalshi["time"].max()
+    # both series cover the same evening (a 4-hour offset means a time-zone bug). Kalshi
+    # quotes start before tip-off; they can stop before the buzzer once the book is one-sided.
+    assert kalshi["time"].min() <= plays["time"].min() < kalshi["time"].max()
     print("live checks: all pass")
 
     plot(kalshi, plays)
