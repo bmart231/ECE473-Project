@@ -58,3 +58,34 @@ see where the risk is highest.
 3. **Trades only, no order book.** Kalshi's history has trades but not order
    book snapshots, so prices are seen only when someone trades. Trading is
    sparse between plays, which adds noise; averaging over many plays handles it.
+
+## After implementation
+
+Results: `notebooks/lead_lag.pdf`. Kalshi reacts 1-3 s **after** the play's
+timestamp, so we move on to the quoting rule and backtest rather than improving
+the model first.
+
+### Why not improve the model first
+
+- **It can't create an edge.** At best a better model predicts winners as well as
+  Kalshi, which is where it already is: +0.0003 log loss over 799 games. Getting
+  even closer to the market doesn't make money by itself.
+- **The model's job has changed.** We aren't trying to out-predict Kalshi any
+  more. We need a quick estimate of where the price _should_ go in the 1-3 s
+  after a play, before the market gets there. What matters is how big the model's
+  jump is, not how well it predicts winners.
+- **Without a backtest we can't tell which improvement pays.** Improving the
+  model now would be guessing which error costs money. The backtest will show
+  where we lose: stale quotes after plays, jumps that are too big, or quotes that
+  are too wide.
+
+### Two adjustments, as quoting-rule settings rather than changes to `stern.py`
+
+| Setting    | What the data says                                                                                     | Starting value                          |
+| ---------- | ------------------------------------------------------------------------------------------------------ | --------------------------------------- |
+| σ          | The market prices as if σ ≈ 22, not 19.64. By quarter it runs from about 26 in Q1 to about 21.5 in Q4. | 22, with a per-quarter version to try   |
+| Jump scale | Within 20 s the market moves about half the model's jump (2.4¢ vs 4.6¢)                                | Between 0.5 and 1, chosen by the backtest |
+
+`stern_p` already takes σ as an argument, so neither needs a change to
+`stern.py`. Both are tuned on the tuning-period games inside the backtest, never
+on the held-out Feb-Jun 2026 games.
