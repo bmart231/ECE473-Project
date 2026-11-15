@@ -58,31 +58,3 @@ see where the risk is highest.
 3. **Trades only, no order book.** Kalshi's history has trades but not order
    book snapshots, so prices are seen only when someone trades. Trading is
    sparse between plays, which adds noise; averaging over many plays handles it.
-
-## Python vs C++
-
-**Stay in Python.**
-
-- **Data is small.** At a guessed few thousand trades a game, 800 games is about
-  1-10 million rows. pandas handles that in seconds with the same tools as the
-  batch run (`merge_asof`, `groupby`).
-- **The bottleneck is the network.** The slow part is paging through Kalshi's
-  trade history under rate limits. C++ can't speed that up; caching and retries
-  (already in `batch_compare.py`) do.
-- **C++ costs more than it saves.** It would mean rewriting the model, loaders
-  and checks, plus a second toolchain.
-
-C++ (or `numba`) only pays off for a full tick-by-tick backtest with many
-millions of simulated events and parameter sweeps. Even then, optimize the inner
-loop only, after vectorized pandas proves too slow.
-
-## Plan
-
-1. Download trades for a sample of about 100-200 games, cached per game like the
-   batch run.
-2. Line them up against scoring plays, and build the lead-lag curve and the
-   by-quarter split.
-3. Add a notebook section with the chart and what it means for quoting:
-   - **Market leads:** quote around the market mid, and pull or widen quotes
-     right after plays.
-   - **We keep up:** quote around the model.
