@@ -38,7 +38,8 @@ def log_loss_by_quarter(df: pd.DataFrame) -> Figure:
     fig, ax = plt.subplots(figsize=(9, 4))
     for offset, (name, grp) in zip((-0.1, 0.1), diffs.groupby("value", sort=False)):
         ax.errorbar(grp["group"] + offset, grp["mean"], yerr=grp["ci95"], fmt="o", capsize=4, label=name)
-    ax.set_xticks(list(games_per_q.index), [f"{Q[q]}\n({n} games)" for q, n in games_per_q.items()])
+    quarters, n_games = games_per_q.index.tolist(), games_per_q.tolist()
+    ax.set_xticks(quarters, [f"{Q[q]}\n({n} games)" for q, n in zip(quarters, n_games)])
     ax.set(ylabel="log loss, model - market",
            title="Model minus market log loss by quarter (below 0 = model better)")
     _finish(ax)
@@ -147,6 +148,35 @@ def example_games(df: pd.DataFrame, n: int = 6, seed: int = 1) -> Figure:
     return fig
 
 
+def sample_size(df: pd.DataFrame) -> Figure:
+    """How the headline numbers settle as games are added (in the default seed's order)."""
+    scores, sigmas = bc.by_sample_size(df)
+
+    fig, (left, right) = plt.subplots(1, 2, figsize=(13, 4.5))
+    for offset, (name, grp) in zip((0.97, 1.03), scores.groupby("value", sort=False)):
+        left.errorbar(grp["games"] * offset, grp["mean"], yerr=grp["ci95"], fmt="o-", capsize=4, label=name)
+    left.set(ylabel="log loss, model - market", title="Model minus market log loss (below 0 = model better)")
+    _finish(left)
+    left.legend()
+
+    for name, grp in sigmas.groupby("value", sort=False):
+        right.plot(grp["games"], grp["sigma"], "o-", label=f"best sigma: {name}")
+    right.axhline(bc.SIGMA, color="gray", linestyle="--", label=f"our fit (2015-23): {bc.SIGMA}")
+    right.set(ylabel="sigma", title="Sigma the market uses, and that predicts best")
+    _finish(right, zero_line=False)
+    right.legend()
+
+    games = sorted(scores["games"].unique())
+    for ax in (left, right):
+        ax.set_xscale("log")
+        ax.set_xticks(games, [str(n) for n in games])
+        ax.minorticks_off()
+        ax.set_xlabel("games in the sample")
+    fig.suptitle("How the estimates settle as more games are added")
+    fig.tight_layout()
+    return fig
+
+
 CHARTS = {
     "1_log_loss_by_quarter": log_loss_by_quarter,
     "2_calibration": calibration,
@@ -154,11 +184,18 @@ CHARTS = {
     "4_sigma_sweep": sigma_sweep,
     "5_pregame_elo_vs_kalshi": pregame,
     "6_example_games": example_games,
+    "7_sample_size": sample_size,
 }
 
 
-def save_all(df: pd.DataFrame, out_dir: Path = FIGURE_DIR) -> list[Path]:
-    """Render every chart in CHARTS to out_dir/<name>.png and return the paths."""
+def save_all(df: pd.DataFrame, out_dir: Path | None = None) -> list[Path]:
+    """Render every chart in CHARTS to out_dir/<name>.png and return the paths.
+
+    By default each run gets its own folder named after its game count, e.g.
+    figures/kalshi_comparison/100_games/, so earlier runs' charts are kept for comparison.
+    """
+    if out_dir is None:
+        out_dir = FIGURE_DIR / f"{df['game_id'].nunique()}_games"
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
     for name, chart in CHARTS.items():

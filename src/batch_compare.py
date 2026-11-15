@@ -6,7 +6,8 @@ Run:  uv run python src/batch_compare.py                 # 100 games, seed 473
       uv run python src/batch_compare.py --refresh       # re-download everything
 
 Writes data/processed/kalshi_vs_model.parquet, one row per in-game Kalshi minute, and the
-charts from compare_plots.py to figures/kalshi_comparison/*.png.
+charts from compare_plots.py to figures/kalshi_comparison/<games>_games/ (one folder per
+run size, so earlier runs' charts are kept).
 Discussion and conclusions: notebooks/kalshi_comparison.ipynb (reads the parquet, no API calls).
 
 Design:
@@ -21,6 +22,10 @@ Design:
 """
 
 import argparse
+import contextlib
+import io
+import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -59,6 +64,14 @@ PREDICTORS = {
 }
 QUARTER_LABELS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", 5: "OT"}
 EPS = 1e-6  # keeps log() finite for p of exactly 0 or 1
+
+# Downloads. After ~700 games in a row the NBA feed started answering with empty bodies,
+# which nba_api parses without checking the status, so they surface as JSONDecodeError.
+# Kalshi throttling surfaces as HTTPError, network drops as ConnectionError/Timeout.
+TRANSIENT_ERRORS = (json.JSONDecodeError, requests.RequestException)
+REQUEST_PAUSE = 1.0           # seconds to wait after each downloaded game
+RETRY_WAITS = (5, 20, 60)     # seconds before each retry of a temporary failure
+MAX_TRANSIENT_STREAK = 3      # this many games in a row still failing -> stop downloading
 
 
 # ---------- 1. game list ----------
@@ -171,19 +184,51 @@ def build_game_list(refresh: bool = False) -> pd.DataFrame:
     return games
 
 
+def draw_sample(games: pd.DataFrame, n: int | None = N_GAMES, seed: int = SEED,
+                by_date: bool = True) -> pd.DataFrame:
+    """n games at random (all of them if n is None), sorted by date unless by_date=False.
+
+    pandas draws a prefix of one seeded permutation, so with the same seed a larger n is a
+    superset of a smaller one: the 100-game run is the first 100 games of the 803-game run.
+    """
+    size = len(games) if n is None else min(n, len(games))
+    sample = games.sample(n=size, random_state=seed)
+    return sample.sort_values("date") if by_date else sample
+
+
 # ---------- 2. collect minutes ----------
 
-def game_minutes(game_id: str, ticker: str, prior_elo: float, refresh: bool = False) -> pd.DataFrame:
+def with_retries(func, *args, waits: tuple[float, ...] = RETRY_WAITS):
+    """func(*args), retried after each wait in waits if it fails with a TRANSIENT_ERROR.
+
+    Anything else (a failed check, a missing quote) is a property of the game and is
+    raised at once: retrying would only give the same answer.
+    """
+    for wait in waits:
+        try:
+            return func(*args)
+        except TRANSIENT_ERRORS as error:
+            print(f"    {type(error).__name__}, retrying in {wait:g}s")
+            time.sleep(wait)
+    return func(*args)
+
+
+def game_minutes(game_id: str, ticker: str, prior_elo: float, refresh: bool = False,
+                 download: bool = True) -> pd.DataFrame:
     """In-game Kalshi minutes for one game with the game state at each. Cached per game.
 
     Columns: game_id, time, period, secs_left, margin, mid, prior_tipoff
     compare_game also runs live_prototype's per-game checks, so a bad match fails here.
+    download=False reads the cache only (collect sets it once the APIs keep failing).
     """
     path = CACHE_DIR / f"{game_id}.parquet"
     if path.exists() and not refresh:
         return pd.read_parquet(path)
+    if not download:
+        raise RuntimeError("not downloaded: the APIs kept failing earlier in this run; rerun to fetch")
 
-    table = lp.compare_game(game_id, ticker, p_pre=prior_elo)
+    table = with_retries(lp.compare_game, game_id, ticker, prior_elo)
+    time.sleep(REQUEST_PAUSE)
     tip_off = table.attrs["plays"]["time"].min()
     minutes = pd.DataFrame({
         "game_id": game_id,
@@ -201,16 +246,28 @@ def game_minutes(game_id: str, ticker: str, prior_elo: float, refresh: bool = Fa
 
 
 def collect(games: pd.DataFrame, refresh: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """game_minutes for every game -> (minutes joined to the game list, failed games)."""
+    """game_minutes for every game -> (minutes joined to the game list, failed games).
+
+    If MAX_TRANSIENT_STREAK games in a row still fail with temporary API errors after their
+    retries, the APIs are down or blocking us: downloading stops for the rest of the run
+    (hammering them would only extend the block), but cached games still load.
+    """
     frames, failures = [], []
+    download, streak = True, 0
     # plain lists rather than itertuples(), whose fields are untyped (see prior.build_prior)
     rows = zip(games["game_id"].tolist(), games["ticker"].tolist(), games["prior_elo"].tolist())
     for i, (game_id, ticker, prior_elo) in enumerate(rows, start=1):
         try:
-            frames.append(game_minutes(game_id, ticker, prior_elo, refresh))
+            frames.append(game_minutes(game_id, ticker, prior_elo, refresh, download))
+            streak = 0
         except Exception as error:  # one bad game must not stop the batch; the reason is kept
             failures.append({"game_id": game_id, "ticker": ticker,
                              "error": f"{type(error).__name__}: {error}"})
+            streak = streak + 1 if isinstance(error, TRANSIENT_ERRORS) else 0
+            if download and streak >= MAX_TRANSIENT_STREAK:
+                download = False
+                print(f"  {streak} games in a row failed with API errors even after retries; "
+                      "skipping the remaining downloads (cached games still load). Rerun later.")
         if i % 10 == 0 or i == len(games):
             print(f"  {i}/{len(games)} games ({len(failures)} failed)")
 
@@ -327,6 +384,31 @@ def best_sigma(curve: pd.DataFrame) -> pd.DataFrame:
     return best.pivot(index="group", columns="value", values="sigma")
 
 
+def by_sample_size(df: pd.DataFrame, sizes: tuple[int, ...] = (25, 50, 100, 200, 400),
+                   seed: int = SEED) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The headline numbers recomputed on the first n games of the seeded sample, growing n.
+
+    Shows how the estimates settle and their intervals shrink as games are added, in the
+    order the sample draws them (so n=100 is the 100-game run, less any game that failed).
+    Sizes at or above the games in df are replaced by all of them. Returns two tables:
+    (games, value, mean, ci95) for each model's log loss minus the market's, and
+    (games, value, sigma) for the sigma that best matches the market and the results.
+    """
+    order = draw_sample(pd.read_parquet(GAMES_PATH), n=None, seed=seed, by_date=False)["game_id"]
+    order = order[order.isin(df["game_id"])].tolist()
+    sizes = tuple(n for n in sizes if n < len(order)) + (len(order),)
+
+    scores, sigmas = [], []
+    for n in sizes:
+        subset = df[df["game_id"].isin(order[:n])]
+        table = score_table(subset)
+        scores.append(table[table["value"].str.endswith("- market")].assign(games=n))
+        best = best_sigma(sigma_curve(subset)).iloc[0]
+        sigmas.append(pd.DataFrame({"games": n, "value": best.index, "sigma": best.to_numpy()}))
+    columns = ["games", "value", "mean", "ci95"]
+    return pd.concat(scores, ignore_index=True)[columns], pd.concat(sigmas, ignore_index=True)
+
+
 # ---------- checks ----------
 
 def run_unit_tests() -> None:
@@ -351,6 +433,14 @@ def run_unit_tests() -> None:
     assert games.to_dict("records") == [{"game_id": "0042400406", "date": pd.Timestamp("2025-06-19"),
                                          "season": 2024, "home": "IND", "away": "OKC", "home_won": 1}]
 
+    # draw_sample: a larger n with the same seed contains the smaller sample
+    pool = pd.DataFrame({"game_id": [f"g{i}" for i in range(50)],
+                         "date": pd.date_range("2025-10-01", periods=50)})
+    small, large = draw_sample(pool, 10), draw_sample(pool, 30)
+    assert set(small["game_id"]) <= set(large["game_id"]) and small["date"].is_monotonic_increasing
+    unsorted = draw_sample(pool, None, by_date=False)["game_id"].tolist()
+    assert unsorted[:10] == draw_sample(pool, 10, by_date=False)["game_id"].tolist()
+
     # losses and buckets
     assert np.isclose(log_loss_rows(np.array([1]), np.array([0.5]))[0], np.log(2))
     assert np.allclose(brier_rows(np.array([1, 0]), np.array([0.8, 0.8])), [0.04, 0.64])
@@ -372,6 +462,27 @@ def run_unit_tests() -> None:
     fake["mid"] = stern.stern_p(fake["margin"], fake["secs_left"], fake["prior_tipoff"], 25.0)
     assert best_sigma(sigma_curve(fake))["distance to market"].item() == 25.0
 
+    # with_retries: temporary errors are retried, a game's own errors are raised at once
+    def flaky(errors: list[Exception]):
+        calls = []
+
+        def func():
+            calls.append(1)
+            if errors:
+                raise errors.pop(0)
+            return "ok"
+        return func, calls
+
+    throttled = json.JSONDecodeError("Expecting value", "", 0)
+    with contextlib.redirect_stdout(io.StringIO()):  # hide the "retrying in 0s" lines
+        func, calls = flaky([throttled, requests.ConnectionError()])
+        assert with_retries(func, waits=(0, 0, 0)) == "ok" and len(calls) == 3
+        func, calls = flaky([ValueError("no Kalshi quote before tip-off")])
+        assert lp.g6._raises(ValueError, with_retries, func) and len(calls) == 1
+        func, calls = flaky([throttled] * 4)
+        assert lp.g6._raises(json.JSONDecodeError, lambda: with_retries(func, waits=(0, 0, 0)))
+        assert len(calls) == 4
+
     print("unit tests: all pass")
 
 
@@ -384,8 +495,7 @@ def main() -> None:
 
     run_unit_tests()
     games = build_game_list(args.refresh)
-    # numpy's sample is a permutation prefix, so a larger n with the same seed is a superset
-    sample = games.sample(n=min(args.n, len(games)), random_state=args.seed).sort_values("date")
+    sample = draw_sample(games, args.n, args.seed)
     print(f"sampled {len(sample)} of {len(games)} games, "
           f"{sample['date'].min():%Y-%m-%d} to {sample['date'].max():%Y-%m-%d}")
 

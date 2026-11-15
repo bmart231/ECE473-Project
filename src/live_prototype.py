@@ -35,6 +35,12 @@ SIGMA = g6.SIGMA                      # 19.64, pooled fit (sigma_results.md)
 ELO_SEASONS = list(range(2015, 2025))  # seasons we have play-by-play for in data/raw/pbp/
 WINDOW_PAD = pd.Timedelta(minutes=10)  # candles from this long before tip-off to this long after the buzzer
 
+# market sanity check (check_market). Over 697 games the in-game correlation between Kalshi
+# mid and the model was 0.77 at the lowest (median 0.98); a flipped side gives the negative of
+# that and a wrong game gives roughly 0, so 0.5 separates them with room to spare.
+MIN_MARKET_CORR = 0.5
+MIN_MINUTES = 20  # fewest in-game minutes with a two-sided quote seen was 39
+
 
 # ---------- step 1: plays with real time ----------
 
@@ -96,6 +102,8 @@ def load_kalshi_home_p(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> p
     for path in (f"historical/markets/{ticker}/candlesticks",
                 f"series/{ticker.split('-')[0]}/markets/{ticker}/candlesticks"):
         response = requests.get(f"{g6.KALSHI_BASE}/{path}", params=params, timeout=30)
+        if response.status_code == 429 or response.status_code >= 500:
+            response.raise_for_status()  # throttled or down: temporary, not "no candles"
         if response.ok and response.json().get("candlesticks"):
             break
     else:
@@ -168,7 +176,7 @@ def compare_game(game_id: str, ticker: str, p_pre: float | None = None,
         source = "given"
 
     plays["p"] = stern.stern_p(plays["margin"].to_numpy(), plays["secs_left"].to_numpy(), p_pre, sigma)
-    check_game(kalshi, plays, p_pre)
+    check_game(plays, p_pre)
 
     # for each Kalshi minute, the model's value as of the most recent play. Feed order is game
     # order (check_game), so a timestamp that steps back is clamped to the play before it
@@ -178,13 +186,14 @@ def compare_game(game_id: str, ticker: str, p_pre: float | None = None,
     table = pd.merge_asof(in_game, state, on="time", direction="backward")
     table["gap"] = table["p"] - table["mid"]
     table.insert(0, "game_id", game_id)
+    check_market(table)
 
     table.attrs.update(kalshi=kalshi, plays=plays, p_pre=p_pre, prior_source=source, ticker=ticker)
     return table
 
 
-def check_game(kalshi: pd.DataFrame, plays: pd.DataFrame, p_pre: float) -> None:
-    """Checks that hold for every game. A failure means the inputs don't belong together."""
+def check_game(plays: pd.DataFrame, p_pre: float) -> None:
+    """Checks on the play-by-play that hold for every game. A failure means the feed is bad."""
     home_won = plays["margin"].iloc[-1] > 0
 
     assert plays["margin"].iloc[-1] != 0, "game ends tied: play-by-play is incomplete"
@@ -197,12 +206,21 @@ def check_game(kalshi: pd.DataFrame, plays: pd.DataFrame, p_pre: float) -> None:
     # ~2 min (a sub or violation logged late around free throws). compare_game keeps feed
     # order and clamps those, so only a gross error (several minutes) fails here.
     assert plays["time"].diff().dt.total_seconds().min() > -300, "play timestamps jump back by minutes"
-    # a flipped side or wrong game ends confidently on the losing side. Only that is checked:
-    # one-sided quotes are dropped, so the last two-sided quote can predate a late swing.
-    final_mid = kalshi["mid"].iloc[-1]
-    assert final_mid > 0.1 if home_won else final_mid < 0.9, (
-        f"Kalshi ends at {final_mid:.3f} but home_won is {home_won}: wrong ticker or wrong side"
-    )
+
+
+def check_market(table: pd.DataFrame) -> None:
+    """Checks that the Kalshi market belongs to this game and is the right way round.
+
+    A flipped side or a different game's market can't move with the score, so the
+    in-game correlation between mid and model gives it away. Comparing only the last quote
+    to the result (an earlier version) also rejected real games: one-sided quotes are
+    dropped, so a late comeback leaves the last two-sided quote on the losing side.
+    """
+    assert len(table) >= MIN_MINUTES, (
+        f"only {len(table)} in-game minutes with a two-sided Kalshi quote (need {MIN_MINUTES})")
+    corr = table["mid"].corr(table["p"])
+    assert corr > MIN_MARKET_CORR, (
+        f"Kalshi and model correlate at {corr:.2f} (need > {MIN_MARKET_CORR}): wrong ticker or wrong side")
 
 
 def summarize(table: pd.DataFrame) -> None:
@@ -256,6 +274,14 @@ def run_unit_tests() -> None:
     # the model through overtime: 0.5 when tied at the buzzer, live again in OT, then 0/1
     p = stern.stern_p(plays["margin"].to_numpy(), plays["secs_left"].to_numpy(), 0.5, SIGMA)
     assert p[2] == 0.5 and abs(p[3] - 0.5) < 1e-9 and p[4] == 1.0
+
+    # market check: judged on how mid moves with the model, not on the final result, so a
+    # market that tracks the model passes; a flipped side fails, as does too short a market
+    model = pd.Series([0.5 + 0.4 * i / (MIN_MINUTES - 1) for i in range(MIN_MINUTES)])  # home pulls ahead
+    tracking = pd.DataFrame({"p": model, "mid": model - 0.02})
+    check_market(tracking)
+    assert g6._raises(AssertionError, check_market, tracking.assign(mid=1 - tracking["mid"]))
+    assert g6._raises(AssertionError, check_market, tracking.head(MIN_MINUTES - 1))
 
     print("unit tests: all pass")
 
