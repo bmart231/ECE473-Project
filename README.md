@@ -23,7 +23,7 @@ decisions: `ProgressLog.md`.
 3. **Quoting (still need to do):** center bid and ask on the model, with a
    spread that widens when the price is likely to move fast.
 
-## What we've done so far (updated 11/12/2026)
+## What we've done so far (updated 11/15/2026)
 
 - **Data:** 10 seasons of NBA play-by-play (2015-16 to 2024-25), plus the Kalshi
   and `nba_api` feeds checked on real games.
@@ -34,19 +34,30 @@ decisions: `ProgressLog.md`.
 - **First market test:** 2025 Finals Game 6, model vs Kalshi. They track closely
   (average gap about 3 cents), but the model trusts leads more than the market
   does.
+- **799-game comparison** (Apr 2025 to Jan 2026, `notebooks/kalshi_comparison.pdf`):
+  - The model predicts the winner **no better than Kalshi** (log loss +0.0003 ±
+    0.0037), so any profit has to come from the spread.
+  - Starting from **Elo is worse** than starting from Kalshi's pregame price.
+  - The model is **too extreme**: the market acts as if $\sigma \approx 22$, not
+    19.64, and is better calibrated.
 
 ## Repo layout
 
-| Path                             | What it is                                               |
-| -------------------------------- | -------------------------------------------------------- |
-| `src/download_pbp.py`            | Downloads the play-by-play data into `data/raw/pbp/`     |
-| `src/play_by_play.py`            | Cleans play-by-play into scoring plays and a games table |
-| `src/prior.py`                   | Elo pregame prior                                        |
-| `src/stern.py`                   | Stern win probability model                              |
-| `src/fit_sigma.py`               | Fits σ and reports log loss, Brier and calibration       |
-| `src/prototype_game_6.py`        | Game 6: Kalshi vs model chart                            |
-| `notebooks/project_so_far.ipynb` | Walkthrough of everything above                          |
-| `testing_docs/`                  | Small demos of the Kalshi and `nba_api` APIs             |
+| Path                                | What it is                                                |
+| ----------------------------------- | --------------------------------------------------------- |
+| `src/download_pbp.py`               | Downloads the play-by-play data into `data/raw/pbp/`      |
+| `src/play_by_play.py`               | Cleans play-by-play into scoring plays and a games table  |
+| `src/prior.py`                      | Elo pregame prior                                         |
+| `src/stern.py`                      | Stern win probability model                               |
+| `src/fit_sigma.py`                  | Fits σ and reports log loss, Brier and calibration        |
+| `src/prototype_game_6.py`           | Game 6: Kalshi vs model chart                             |
+| `src/live_prototype.py`             | Kalshi vs model for any game from Apr 2025 on             |
+| `src/batch_compare.py`              | Kalshi vs model over many games; saves data and charts    |
+| `src/compare_plots.py`              | Charts for the batch comparison                           |
+| `notebooks/project_so_far.ipynb`    | Walkthrough of the model, fit and Game 6                  |
+| `notebooks/kalshi_comparison.ipynb` | Batch comparison results and conclusions (also as `.pdf`) |
+| `figures/kalshi_comparison/`        | Charts from each batch run, one folder per run size       |
+| `testing_docs/`                     | Small demos of the Kalshi and `nba_api` APIs              |
 
 ## Setup
 
@@ -59,10 +70,14 @@ uv sync                                        # install dependencies
 uv run python src/download_pbp.py              # download play-by-play (once)
 uv run python src/fit_sigma.py                 # fit sigma
 uv run python src/prototype_game_6.py          # Game 6 chart
+uv run python src/batch_compare.py --n 803     # all games vs Kalshi (cached after the first run)
 ```
 
 ## Next steps
 
-- Use the Elo prior (not a hand-set number) for Game 6, and run more games.
-- Check whether Kalshi moves before our play timestamps.
-- Build the quoting rule and simulate fills and PnL.
+- **Lead-lag:** check whether Kalshi moves before our play timestamps, using
+  Kalshi's trade-level data.
+- **Quoting rule:** start from Kalshi's pregame price with $\sigma \approx 22$,
+  with a spread floor of about 3 cents.
+- **Backtest:** simulate fills and PnL against a market maker that follows the
+  mid, then test once on the held-out Feb-Jun 2026 games.
