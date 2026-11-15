@@ -22,10 +22,6 @@ Design:
 """
 
 import argparse
-import contextlib
-import io
-import json
-import time
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +29,7 @@ import pandas as pd
 import requests
 from nba_api.stats.endpoints import leaguegamefinder
 
+import downloads
 import live_prototype as lp
 import play_by_play
 import prior
@@ -64,14 +61,6 @@ PREDICTORS = {
 }
 QUARTER_LABELS = {1: "Q1", 2: "Q2", 3: "Q3", 4: "Q4", 5: "OT"}
 EPS = 1e-6  # keeps log() finite for p of exactly 0 or 1
-
-# Downloads. After ~700 games in a row the NBA feed started answering with empty bodies,
-# which nba_api parses without checking the status, so they surface as JSONDecodeError.
-# Kalshi throttling surfaces as HTTPError, network drops as ConnectionError/Timeout.
-TRANSIENT_ERRORS = (json.JSONDecodeError, requests.RequestException)
-REQUEST_PAUSE = 1.0           # seconds to wait after each downloaded game
-RETRY_WAITS = (5, 20, 60)     # seconds before each retry of a temporary failure
-MAX_TRANSIENT_STREAK = 3      # this many games in a row still failing -> stop downloading
 
 
 # ---------- 1. game list ----------
@@ -198,39 +187,15 @@ def draw_sample(games: pd.DataFrame, n: int | None = N_GAMES, seed: int = SEED,
 
 # ---------- 2. collect minutes ----------
 
-def with_retries(func, *args, waits: tuple[float, ...] = RETRY_WAITS):
-    """func(*args), retried after each wait in waits if it fails with a TRANSIENT_ERROR.
-
-    Anything else (a failed check, a missing quote) is a property of the game and is
-    raised at once: retrying would only give the same answer.
-    """
-    for wait in waits:
-        try:
-            return func(*args)
-        except TRANSIENT_ERRORS as error:
-            print(f"    {type(error).__name__}, retrying in {wait:g}s")
-            time.sleep(wait)
-    return func(*args)
-
-
-def game_minutes(game_id: str, ticker: str, prior_elo: float, refresh: bool = False,
-                 download: bool = True) -> pd.DataFrame:
-    """In-game Kalshi minutes for one game with the game state at each. Cached per game.
+def download_minutes(game_id: str, ticker: str, prior_elo: float) -> pd.DataFrame:
+    """In-game Kalshi minutes for one game with the game state at each (no cache).
 
     Columns: game_id, time, period, secs_left, margin, mid, prior_tipoff
     compare_game also runs live_prototype's per-game checks, so a bad match fails here.
-    download=False reads the cache only (collect sets it once the APIs keep failing).
     """
-    path = CACHE_DIR / f"{game_id}.parquet"
-    if path.exists() and not refresh:
-        return pd.read_parquet(path)
-    if not download:
-        raise RuntimeError("not downloaded: the APIs kept failing earlier in this run; rerun to fetch")
-
-    table = with_retries(lp.compare_game, game_id, ticker, prior_elo)
-    time.sleep(REQUEST_PAUSE)
+    table = lp.compare_game(game_id, ticker, prior_elo)
     tip_off = table.attrs["plays"]["time"].min()
-    minutes = pd.DataFrame({
+    return pd.DataFrame({
         "game_id": game_id,
         "time": table["time"],
         "period": table["period"],
@@ -240,40 +205,23 @@ def game_minutes(game_id: str, ticker: str, prior_elo: float, refresh: bool = Fa
         "prior_tipoff": lp.kalshi_tipoff_mid(table.attrs["kalshi"], tip_off),
     })
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    minutes.to_parquet(path)
-    return minutes
+
+def game_minutes(game_id: str, ticker: str, prior_elo: float, refresh: bool = False,
+                 allowed: bool = True) -> pd.DataFrame:
+    """download_minutes, cached per game in CACHE_DIR (see downloads.cached)."""
+    return downloads.cached(CACHE_DIR / f"{game_id}.parquet",
+                            lambda: download_minutes(game_id, ticker, prior_elo), refresh, allowed)
 
 
 def collect(games: pd.DataFrame, refresh: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """game_minutes for every game -> (minutes joined to the game list, failed games).
+    """game_minutes for every game -> (minutes joined to the game list, failed games)."""
+    def load_one(row: dict, allowed: bool) -> pd.DataFrame:
+        return game_minutes(row["game_id"], row["ticker"], row["prior_elo"], refresh, allowed)
 
-    If MAX_TRANSIENT_STREAK games in a row still fail with temporary API errors after their
-    retries, the APIs are down or blocking us: downloading stops for the rest of the run
-    (hammering them would only extend the block), but cached games still load.
-    """
-    frames, failures = [], []
-    download, streak = True, 0
-    # plain lists rather than itertuples(), whose fields are untyped (see prior.build_prior)
-    rows = zip(games["game_id"].tolist(), games["ticker"].tolist(), games["prior_elo"].tolist())
-    for i, (game_id, ticker, prior_elo) in enumerate(rows, start=1):
-        try:
-            frames.append(game_minutes(game_id, ticker, prior_elo, refresh, download))
-            streak = 0
-        except Exception as error:  # one bad game must not stop the batch; the reason is kept
-            failures.append({"game_id": game_id, "ticker": ticker,
-                             "error": f"{type(error).__name__}: {error}"})
-            streak = streak + 1 if isinstance(error, TRANSIENT_ERRORS) else 0
-            if download and streak >= MAX_TRANSIENT_STREAK:
-                download = False
-                print(f"  {streak} games in a row failed with API errors even after retries; "
-                      "skipping the remaining downloads (cached games still load). Rerun later.")
-        if i % 10 == 0 or i == len(games):
-            print(f"  {i}/{len(games)} games ({len(failures)} failed)")
-
+    frames, failures = downloads.for_each_game(games, load_one)
     columns = ["game_id", "date", "home", "away", "home_won", "prior_elo"]
     minutes = pd.concat(frames, ignore_index=True).merge(games[columns], on="game_id")
-    return minutes, pd.DataFrame(failures, columns=["game_id", "ticker", "error"])
+    return minutes, failures
 
 
 def load_results(path: Path = MINUTES_PATH, sigma: float = SIGMA) -> pd.DataFrame:
@@ -462,27 +410,6 @@ def run_unit_tests() -> None:
     fake["mid"] = stern.stern_p(fake["margin"], fake["secs_left"], fake["prior_tipoff"], 25.0)
     assert best_sigma(sigma_curve(fake))["distance to market"].item() == 25.0
 
-    # with_retries: temporary errors are retried, a game's own errors are raised at once
-    def flaky(errors: list[Exception]):
-        calls = []
-
-        def func():
-            calls.append(1)
-            if errors:
-                raise errors.pop(0)
-            return "ok"
-        return func, calls
-
-    throttled = json.JSONDecodeError("Expecting value", "", 0)
-    with contextlib.redirect_stdout(io.StringIO()):  # hide the "retrying in 0s" lines
-        func, calls = flaky([throttled, requests.ConnectionError()])
-        assert with_retries(func, waits=(0, 0, 0)) == "ok" and len(calls) == 3
-        func, calls = flaky([ValueError("no Kalshi quote before tip-off")])
-        assert lp.g6._raises(ValueError, with_retries, func) and len(calls) == 1
-        func, calls = flaky([throttled] * 4)
-        assert lp.g6._raises(json.JSONDecodeError, lambda: with_retries(func, waits=(0, 0, 0)))
-        assert len(calls) == 4
-
     print("unit tests: all pass")
 
 
@@ -493,6 +420,7 @@ def main() -> None:
     parser.add_argument("--refresh", action="store_true", help="ignore cached downloads")
     args = parser.parse_args()
 
+    downloads.run_unit_tests()
     run_unit_tests()
     games = build_game_list(args.refresh)
     sample = draw_sample(games, args.n, args.seed)
