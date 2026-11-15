@@ -40,6 +40,12 @@ decisions: `ProgressLog.md`.
   - Starting from **Elo is worse** than starting from Kalshi's pregame price.
   - The model is **too extreme**: the market acts as if $\sigma \approx 22$, not
     19.64, and is better calibrated.
+- **Lead-lag** (150 games, 8,105 scoring plays, `notebooks/lead_lag.pdf`; method
+  in `LeadLag_Plan.md`):
+  - Kalshi reacts **after** the NBA feed's play timestamp, not before: 20% of the
+    move is done by the timestamp, half by +3.1 s, and trading peaks at +1 s.
+  - The market reacts fastest in Q4 (half by +2.2 s) and moves about half as
+    much as the model's jump.
 
 ## Repo layout
 
@@ -54,9 +60,14 @@ decisions: `ProgressLog.md`.
 | `src/live_prototype.py`             | Kalshi vs model for any game from Apr 2025 on             |
 | `src/batch_compare.py`              | Kalshi vs model over many games; saves data and charts    |
 | `src/compare_plots.py`              | Charts for the batch comparison                           |
+| `src/lead_lag.py`                   | Kalshi trades around scoring plays: who moves first       |
+| `src/lead_lag_plots.py`             | Charts for the lead-lag study                             |
+| `src/downloads.py`                  | Shared retries, per-game cache and batch download loop    |
 | `notebooks/project_so_far.ipynb`    | Walkthrough of the model, fit and Game 6                  |
 | `notebooks/kalshi_comparison.ipynb` | Batch comparison results and conclusions (also as `.pdf`) |
+| `notebooks/lead_lag.ipynb`          | Lead-lag results and conclusions (also as `.pdf`)         |
 | `figures/kalshi_comparison/`        | Charts from each batch run, one folder per run size       |
+| `figures/lead_lag/`                 | Charts from each lead-lag run, one folder per run size    |
 | `testing_docs/`                     | Small demos of the Kalshi and `nba_api` APIs              |
 
 ## Setup
@@ -71,13 +82,15 @@ uv run python src/download_pbp.py              # download play-by-play (once)
 uv run python src/fit_sigma.py                 # fit sigma
 uv run python src/prototype_game_6.py          # Game 6 chart
 uv run python src/batch_compare.py --n 803     # all games vs Kalshi (cached after the first run)
+uv run python src/lead_lag.py                  # lead-lag on 150 games (needs batch_compare first)
 ```
 
 ## Next steps
 
-- **Lead-lag:** check whether Kalshi moves before our play timestamps, using
-  Kalshi's trade-level data.
+- **Feed delay:** log when each play arrives from the live NBA feed during real
+  games. If it is more than about 2 s behind the play, we can't keep up.
 - **Quoting rule:** start from Kalshi's pregame price with $\sigma \approx 22$,
-  with a spread floor of about 3 cents.
+  a spread floor of about 3 cents, and pull or widen quotes for a few seconds
+  after every score.
 - **Backtest:** simulate fills and PnL against a market maker that follows the
   mid, then test once on the held-out Feb-Jun 2026 games.
