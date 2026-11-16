@@ -63,6 +63,7 @@ decisions: `ProgressLog.md`.
 | `src/lead_lag.py`                   | Kalshi trades around scoring plays: who moves first       |
 | `src/lead_lag_plots.py`             | Charts for the lead-lag study                             |
 | `src/downloads.py`                  | Shared retries, per-game cache and batch download loop    |
+| `src/feed_delay.py`                 | Live logger: when the NBA feed delivers each play         |
 | `notebooks/project_so_far.ipynb`    | Walkthrough of the model, fit and Game 6                  |
 | `notebooks/kalshi_comparison.ipynb` | Batch comparison results and conclusions (also as `.pdf`) |
 | `notebooks/lead_lag.ipynb`          | Lead-lag results and conclusions (also as `.pdf`)         |
@@ -83,6 +84,7 @@ uv run python src/fit_sigma.py                 # fit sigma
 uv run python src/prototype_game_6.py          # Game 6 chart
 uv run python src/batch_compare.py --n 803     # all games vs Kalshi (cached after the first run)
 uv run python src/lead_lag.py                  # lead-lag on 150 games (needs batch_compare first)
+uv run python src/feed_delay.py                # during live games; then add --summary for the numbers
 ```
 
 ## Next steps
