@@ -49,13 +49,14 @@ N_BOOT = 1000               # bootstrap resamples (of games) for intervals
 
 # ---------- 1. data ----------
 
-def fetch_trades(ticker: str, start: pd.Timestamp, end: pd.Timestamp) -> list[dict]:
-    """Every Kalshi trade in ticker between start and end (pages of 1000, newest first)."""
+def fetch_trades(ticker: str, start: pd.Timestamp, end: pd.Timestamp, url: str = TRADES_URL) -> list[dict]:
+    """Every Kalshi trade in ticker between start and end (pages of 1000, newest first).
+    Settled games are under /historical/trades (the default); recent ones under /markets/trades."""
     params = {"ticker": ticker, "limit": 1000,
               "min_ts": int(start.timestamp()), "max_ts": int(end.timestamp())}
     trades = []
     while True:
-        response = requests.get(TRADES_URL, params=params, timeout=30)
+        response = requests.get(url, params=params, timeout=30)
         if response.status_code == 429 or response.status_code >= 500:
             response.raise_for_status()  # throttled or down: temporary, retried by downloads
         if not response.ok:
