@@ -16,3 +16,6 @@ data/raw/
 
 # per-game download cache for src/batch_compare.py (rebuilt on demand)
 data/processed/cache/
+
+# personal Claude Code settings
+.claude/settings.local.json
