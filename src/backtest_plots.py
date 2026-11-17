@@ -50,8 +50,10 @@ def setting_chart(summary: pd.DataFrame, column: str, xlabel: str, title: str,
     ax.axvline(0, color=MUTED, linewidth=1)
     ax.set_yticks(range(len(versions)), versions)
     ax.invert_yaxis()
-    ax.set(xlabel=xlabel, title=f"{title} ({rule} fills, {table['games'].max()} games)")
-    ax.legend(loc="lower right", frameon=False, fontsize=9)
+    ax.set(xlabel=xlabel)
+    ax.set_title(f"{title} ({rule} fills, {table['games'].max()} games)", pad=28)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncol=len(DELAY_COLORS),
+              frameon=False, fontsize=9)
     _style(ax)
     fig.tight_layout()
     return fig

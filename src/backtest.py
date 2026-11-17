@@ -29,7 +29,8 @@ MARKOUT_SECS = 60               # how long after a fill we judge it
 DELAYS = (0.0, 3.0, 12.9)       # feed delays: ideal, paid low-latency feed, measured free feed
 RULES = ("strict", "touch")     # fills: only prints through our price / also prints at it
 BASELINE = Params(w=0, b=0, cooldown=0)  # plain mid-quoting: market only, 1c fixed, no guard
-FILL_COLUMNS = ["second", "side", "price", "contracts", "fee"]  # side +1 = we bought
+FILL_COLUMNS = {"second": "int64", "side": "int64", "price": "float64",  # side +1 = we bought
+                "contracts": "float64", "fee": "float64"}
 
 
 def _cents(trades: pd.DataFrame) -> np.ndarray:
@@ -94,6 +95,11 @@ def matched(q: Quote, cents: np.ndarray, contracts: np.ndarray, taker_buys: np.n
     return bought, sold
 
 
+def fill_table(fills: list[tuple]) -> pd.DataFrame:
+    """(second, side, price, contracts, fee) tuples -> FILL_COLUMNS, typed even when empty."""
+    return pd.DataFrame(fills, columns=list(FILL_COLUMNS)).astype(FILL_COLUMNS)
+
+
 def _rows(frame: pd.DataFrame) -> list[tuple]:
     """The columns a quote needs, as plain tuples (fast to read one at a time)."""
     return list(frame[["p_market", "p_model", "secs_left", "since_jump"]].itertuples(index=False, name=None))
@@ -137,7 +143,7 @@ def simulate(frame: pd.DataFrame, trades: pd.DataFrame, params: Params, rule: st
             if price is not None and size > 0:
                 fills.append((s, side, price, size, kalshi_fee(price, size)))
                 position += side * size
-    return pd.DataFrame(fills, columns=FILL_COLUMNS)
+    return fill_table(fills)
 
 
 def quote_path(frame: pd.DataFrame, fills: pd.DataFrame, params: Params) -> pd.DataFrame:
@@ -336,21 +342,26 @@ def test_quote_path() -> None:
 def test_score() -> None:
     p_market = np.full(200, 50.0)
     p_market[100:] = 40
-    round_trip = pd.DataFrame([(10, 1, 48, 10, 5), (20, -1, 52, 10, 5)], columns=FILL_COLUMNS)
+    round_trip = fill_table([(10, 1, 48, 10, 5), (20, -1, 52, 10, 5)])
     s = score(round_trip, p_market, home_won=0)
     assert math.isclose(s["pnl_dollars"], 0.30) and math.isclose(s["fees_dollars"], 0.10)
     assert s["markout_cents"] == 2 and s["fills"] == 2 and s["contracts"] == 20
     assert s["drawdown_dollars"] == 0 and s["peak_position"] == 10
 
     # long 10 into a loss: marked at 50, then 40, settled at 0
-    held = pd.DataFrame([(10, 1, 48, 10, 5)], columns=FILL_COLUMNS)
+    held = fill_table([(10, 1, 48, 10, 5)])
     s = score(held, p_market, home_won=0)
     assert math.isclose(s["pnl_dollars"], -4.85)
     assert math.isclose(s["drawdown_dollars"], 5.00)                 # from +0.15 down to -4.85
     # a fill too close to the end is judged against the settlement
-    late = pd.DataFrame([(190, 1, 48, 10, 5)], columns=FILL_COLUMNS)
+    late = fill_table([(190, 1, 48, 10, 5)])
     assert score(late, p_market, home_won=1)["markout_cents"] == 52
     assert math.isnan(score(late.iloc[:0], p_market, 1)["markout_cents"])
+    # a game with no fills at all: every trade at the mid never reaches our quotes
+    plays, trades = _game(FLAT)
+    frame = game_seconds(plays, trades, 3, Params())
+    none = score(simulate(frame, trades, Params()), frame["p_market"].to_numpy(), 1)
+    assert none["fills"] == 0 and none["pnl_dollars"] == 0
 
 
 def test_run_game() -> None:

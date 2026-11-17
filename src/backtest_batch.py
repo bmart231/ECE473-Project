@@ -231,9 +231,12 @@ def download_all() -> None:
 def save_charts(summary: pd.DataFrame, example: pd.Series) -> list[Path]:
     """The comparison charts, and the example game under the full rule at each delay."""
     folder = plots.FIGURE_DIR / f"{summary['games'].max()}_games"
-    paths = [plots.save(plots.setting_chart(summary, "vs_baseline", "profit per game minus the "
-                                            "baseline's, same game ($)", "Each version vs plain "
-                                            "mid-quoting", rule), folder / f"vs_baseline_{rule}.png")
+    paths = [plots.save(plots.setting_chart(summary, column, xlabel, title, rule),
+                        folder / f"{column}_{rule}.png")
+             for column, xlabel, title in [
+                 ("vs_baseline", "profit per game minus the baseline's, same game ($)",
+                  "Each version vs plain mid-quoting"),
+                 ("pnl", "profit per game after fees ($)", "Profit per game")]
              for rule in bt.RULES]
     paths.append(plots.save(plots.setting_chart(summary, "markout_cents", "average 60 s markout "
                                                 "(cents per contract; < 0 = picked off)",
