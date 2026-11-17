@@ -21,6 +21,8 @@ Method, an event study:
 """
 
 import argparse
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +34,7 @@ import downloads
 import live_prototype as lp
 import stern
 
-CACHE_DIR = bc.CACHE_DIR / "lead_lag"                     # per-game scores and trades (git-ignored)
+CACHE_DIR = bc.CACHE_DIR / "lead_lag"                     # per-game plays and trades (git-ignored)
 EVENTS_PATH = bc.PROCESSED / "lead_lag_events.parquet"    # the result
 TRADES_URL = f"{lp.g6.KALSHI_BASE}/historical/trades"
 
@@ -69,14 +71,17 @@ def fetch_trades(ticker: str, start: pd.Timestamp, end: pd.Timestamp, url: str =
 
 
 def trades_to_frame(trades: list[dict], home: bool) -> pd.DataFrame:
-    """Raw trades -> columns time (UTC), price (as P(home wins)), contracts; oldest first."""
+    """Raw trades -> columns time (UTC), price (as P(home wins)), contracts, taker_home
+    (the taker bought the home team); oldest first."""
     if not trades:
         raise ValueError("no Kalshi trades in the game window")
     price = pd.to_numeric(pd.Series([t["yes_price_dollars"] for t in trades]))
+    taker_yes = pd.Series([t["taker_side"] == "yes" for t in trades])
     frame = pd.DataFrame({
         "time": pd.to_datetime([t["created_time"] for t in trades], utc=True, format="ISO8601"),
         "price": price if home else 1 - price,
         "contracts": pd.to_numeric(pd.Series([t["count_fp"] for t in trades])),
+        "taker_home": taker_yes if home else ~taker_yes,
     })
     return frame.sort_values("time", kind="stable").reset_index(drop=True)
 
@@ -140,17 +145,17 @@ def game_events(game_id: str, scores: pd.DataFrame, trades: pd.DataFrame, p_pre:
     return table[start.between(*PRICE_RANGE)].reset_index(drop=True)
 
 
-def load_game(game_id: str, ticker: str, refresh: bool = False, allowed: bool = True
-              ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """(score changes, trades) for one game, each cached in CACHE_DIR."""
-    scores = downloads.cached(CACHE_DIR / f"{game_id}_scores.parquet",
-                              lambda: scoring_events(lp.load_plays(game_id)), refresh, allowed)
-    start, end = scores["time"].min() - TRADE_PAD, scores["time"].max() + TRADE_PAD
+def load_game(game_id: str, ticker: str, refresh: bool = False, allowed: bool = True,
+              folder: Path = CACHE_DIR) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(every play, trades) for one game, each cached in folder. Also the backtest's loader."""
+    plays = downloads.cached(folder / f"{game_id}_plays.parquet",
+                             lambda: lp.load_plays(game_id), refresh, allowed)
+    start, end = plays["time"].min() - TRADE_PAD, plays["time"].max() + TRADE_PAD
     trades = downloads.cached(
-        CACHE_DIR / f"{game_id}_trades.parquet",
+        folder / f"{game_id}_trades.parquet",
         lambda: trades_to_frame(fetch_trades(ticker, start, end), lp.ticker_is_home(ticker)),
         refresh, allowed)
-    return scores, trades
+    return plays, trades
 
 
 def tipoff_price(game_id: str) -> float:
@@ -164,8 +169,8 @@ def tipoff_price(game_id: str) -> float:
 def collect(games: pd.DataFrame, refresh: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     """game_events for every game -> (all events, failed games)."""
     def load_one(row: dict, allowed: bool) -> pd.DataFrame:
-        scores, trades = load_game(row["game_id"], row["ticker"], refresh, allowed)
-        return game_events(row["game_id"], scores, trades, tipoff_price(row["game_id"]))
+        plays, trades = load_game(row["game_id"], row["ticker"], refresh, allowed)
+        return game_events(row["game_id"], scoring_events(plays), trades, tipoff_price(row["game_id"]))
 
     tables, failures = downloads.for_each_game(games, load_one)
     return pd.concat(tables, ignore_index=True), failures
@@ -281,12 +286,29 @@ def run_unit_tests() -> None:
         return pd.Series(t0 + pd.to_timedelta(seconds, unit="s"))
 
     # trades_to_frame: dollar strings -> floats, away ticker flipped, oldest first
-    raw = [{"created_time": "2026-01-01T00:00:02.5Z", "yes_price_dollars": "0.6000", "count_fp": "3.00"},
-           {"created_time": "2026-01-01T00:00:01Z", "yes_price_dollars": "0.5500", "count_fp": "1.00"}]
+    raw = [{"created_time": "2026-01-01T00:00:02.5Z", "yes_price_dollars": "0.6000", "count_fp": "3.00",
+            "taker_side": "yes"},
+           {"created_time": "2026-01-01T00:00:01Z", "yes_price_dollars": "0.5500", "count_fp": "1.00",
+            "taker_side": "no"}]
     home, away = trades_to_frame(raw, home=True), trades_to_frame(raw, home=False)
     assert home["price"].tolist() == [0.55, 0.60] and home["contracts"].tolist() == [1, 3]
     assert np.allclose(away["price"], [0.45, 0.40])
+    assert home["taker_home"].tolist() == [False, True]   # a YES taker on the away ticker
+    assert away["taker_home"].tolist() == [True, False]   # is selling the home team
     assert lp.g6._raises(ValueError, trades_to_frame, [], True)
+
+    # load_game: reads both cached tables; with downloads off, a missing one is an error
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        plays = pd.DataFrame({"time": at([0, 10]), "period": 1, "margin": [0, 2],
+                              "secs_left": [2880.0, 2870.0]})
+        plays.to_parquet(tmp / "g_plays.parquet")
+        home.to_parquet(tmp / "g_trades.parquet")
+        got_plays, got_trades = load_game("g", "T", allowed=False, folder=tmp)
+        assert got_plays.equals(plays) and got_trades.equals(home)
+        assert lp.g6._raises(RuntimeError, load_game, "other", "T", False, False, tmp)
+    finally:
+        shutil.rmtree(tmp)
 
     # scoring_events + usable: free-throw pair too close together, a timestamp that steps
     # back, and a buzzer-beater are all excluded; the isolated basket is kept

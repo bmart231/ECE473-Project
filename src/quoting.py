@@ -50,7 +50,7 @@ class MarketState:
     best_ask: float
     p_model: float | None             # Stern P(win); None while our feed is behind
     secs_left: float                  # game clock (overtime: seconds left in the period)
-    position: int = 0                 # contracts held, + = long YES
+    position: float = 0               # contracts held, + = long YES (Kalshi allows fractions)
     seconds_since_jump: float = math.inf  # from seconds_since_jump()
 
 
@@ -74,7 +74,7 @@ def half_spread(state: MarketState, params: Params) -> float:
     return max(params.h_min, params.a + params.b * float(sensitivity))
 
 
-def skewed_center(c: float, h: float, position: int, params: Params) -> float:
+def skewed_center(c: float, h: float, position: float, params: Params) -> float:
     """Step 3: shift both quotes to unload a position; a full h at the limit."""
     lean = max(-1.0, min(1.0, position / params.q_max))
     return c - lean * h
@@ -108,7 +108,7 @@ def quote(state: MarketState, params: Params = Params()) -> Quote | None:
                  size=params.size)
 
 
-def kalshi_fee(price: float, contracts: int, rate: float = MAKER_FEE) -> int:
+def kalshi_fee(price: float, contracts: float, rate: float = MAKER_FEE) -> int:
     """Cents for one order of `contracts` at `price`: rate * C * P * (1 - P), rounded up."""
     return math.ceil(rate * contracts * price * (100 - price) / 100 - EPS)
 

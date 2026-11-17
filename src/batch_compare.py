@@ -22,6 +22,8 @@ Design:
 """
 
 import argparse
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +44,8 @@ GAMES_PATH = PROCESSED / "games.parquet"              # matched game list with E
 MINUTES_PATH = PROCESSED / "kalshi_vs_model.parquet"  # the batch result
 
 WINDOW = (pd.Timestamp("2025-04-01"), pd.Timestamp("2026-01-31"))  # tuning period, inclusive
+HELDOUT_WINDOW = (pd.Timestamp("2026-02-01"), pd.Timestamp("2026-06-30"))  # final test only
+HELDOUT_PATH = PROCESSED / "games_heldout.parquet"  # nothing reads it before the final run
 N_GAMES = 100
 SEED = 473
 SIGMA = lp.SIGMA  # 19.64
@@ -49,6 +53,7 @@ SIGMA = lp.SIGMA  # 19.64
 # NBA seasons covering WINDOW. The downloaded play-by-play stops at the 2025 playoffs, so
 # 2025-26 results come from nba_api; they extend Elo and are matched to Kalshi markets.
 NBA_SEASONS = [("2024-25", "Playoffs"), ("2025-26", "Regular Season")]
+HELDOUT_SEASONS = [("2025-26", "Regular Season"), ("2025-26", "Playoffs")]
 
 # 'KXNBAGAME-25JUN19OKCIND' -> date '25JUN19', away 'OKC', home 'IND'
 EVENT_RE = r"^KXNBAGAME-(\d{2}[A-Z]{3}\d{2})([A-Z]{3})([A-Z]{3})$"
@@ -123,10 +128,10 @@ def finder_to_games(rows: pd.DataFrame, season: int) -> pd.DataFrame:
     })
 
 
-def fetch_nba_games() -> pd.DataFrame:
-    """Results for NBA_SEASONS, in date order: game_id, date, season, home, away, home_won."""
+def fetch_nba_games(seasons: list[tuple[str, str]] = NBA_SEASONS) -> pd.DataFrame:
+    """Results for seasons, in date order: game_id, date, season, home, away, home_won."""
     frames = []
-    for season, season_type in NBA_SEASONS:
+    for season, season_type in seasons:
         rows = leaguegamefinder.LeagueGameFinder(
             season_nullable=season, season_type_nullable=season_type,
             league_id_nullable="00", timeout=60,
@@ -147,17 +152,20 @@ def elo_priors(recent: pd.DataFrame) -> pd.Series:
     return prior.build_prior(games).set_index("game_id")["p_pre"]
 
 
-def build_game_list(refresh: bool = False) -> pd.DataFrame:
-    """Kalshi games in WINDOW matched to NBA game ids, with Elo priors. Cached to GAMES_PATH.
+def build_game_list(refresh: bool = False, window: tuple = WINDOW,
+                    seasons: list[tuple[str, str]] = NBA_SEASONS, path: Path = GAMES_PATH
+                    ) -> pd.DataFrame:
+    """Kalshi games in window (NBA seasons covering it) matched to NBA game ids, with Elo
+    priors. Cached to path. The held-out list: HELDOUT_WINDOW, HELDOUT_SEASONS, HELDOUT_PATH.
 
     Columns: date, away, home, ticker, game_id, season, home_won, prior_elo
     """
-    if GAMES_PATH.exists() and not refresh:
-        return pd.read_parquet(GAMES_PATH)
+    if path.exists() and not refresh:
+        return pd.read_parquet(path)
 
     events = kalshi_events(fetch_kalshi_markets())
-    events = events[events["date"].between(*WINDOW)]
-    nba = fetch_nba_games()
+    events = events[events["date"].between(*window)]
+    nba = fetch_nba_games(seasons)
 
     games = events.merge(nba, on=["date", "away", "home"], how="inner", validate="one_to_one")
     games["prior_elo"] = games["game_id"].map(elo_priors(nba))
@@ -168,8 +176,8 @@ def build_game_list(refresh: bool = False) -> pd.DataFrame:
 
     print(f"Kalshi games in window: {len(events)}   matched to an NBA game: {settled_right.size}   "
           f"settlement disagrees with result: {(~settled_right).sum()}   usable (with Elo): {len(games)}")
-    PROCESSED.mkdir(parents=True, exist_ok=True)
-    games.to_parquet(GAMES_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    games.to_parquet(path)
     return games
 
 
@@ -380,6 +388,15 @@ def run_unit_tests() -> None:
     games = finder_to_games(rows, 2024)
     assert games.to_dict("records") == [{"game_id": "0042400406", "date": pd.Timestamp("2025-06-19"),
                                          "season": 2024, "home": "IND", "away": "OKC", "home_won": 1}]
+
+    # build_game_list: a list already saved at `path` is read, not rebuilt (no network)
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        saved = games.assign(ticker="T", prior_elo=0.5)
+        saved.to_parquet(tmp / "list.parquet")
+        assert build_game_list(path=tmp / "list.parquet", window=HELDOUT_WINDOW).equals(saved)
+    finally:
+        shutil.rmtree(tmp)
 
     # draw_sample: a larger n with the same seed contains the smaller sample
     pool = pd.DataFrame({"game_id": [f"g{i}" for i in range(50)],

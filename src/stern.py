@@ -11,6 +11,7 @@ whole training table at once instead of one row at a time.
 
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.special import ndtr, ndtri
 from scipy.stats import norm
 
 GAME_SECS = 2880.0  # 4 quarters x 12 minutes
@@ -80,11 +81,13 @@ def basket_sensitivity(p: ArrayLike, secs_left: ArrayLike, sigma: float,
     Needs only the price and the clock, so it works from the market price with no score.
     The quoting rule sizes its spread with it. tau is clipped like stern_p, so at the buzzer
     d is huge: a tie swings fully (0.5), a settled price (0 or 1) doesn't move.
+    Uses the raw ufuncs behind norm.cdf / norm.ppf (ndtr / ndtri): the backtest calls this
+    once per quote, and norm's argument checking made it ~20x slower on scalars.
     """
-    z = norm.ppf(np.asarray(p, dtype=float))
+    z = ndtri(np.asarray(p, dtype=float))
     tau = np.maximum(np.asarray(secs_left, dtype=float) / GAME_SECS, 1e-9)
     d = points / (sigma * np.sqrt(tau))
-    return (norm.cdf(z + d) - norm.cdf(z - d)) / 2
+    return (ndtr(z + d) - ndtr(z - d)) / 2
 
 
 if __name__ == "__main__":
