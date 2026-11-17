@@ -71,6 +71,22 @@ def p_volatility(p: ArrayLike, secs_left: ArrayLike, dt: float = 60.0) -> np.nda
     return norm.pdf(z) * np.sqrt(ratio)
 
 
+def basket_sensitivity(p: ArrayLike, secs_left: ArrayLike, sigma: float,
+                       points: float = 2.0) -> np.ndarray:
+    """How far one basket of `points` would move p right now (half the up-or-down swing).
+
+        sensitivity = (Phi(z + d) - Phi(z - d)) / 2,   z = Phi^-1(p),   d = points / (sigma sqrt(tau))
+
+    Needs only the price and the clock, so it works from the market price with no score.
+    The quoting rule sizes its spread with it. tau is clipped like stern_p, so at the buzzer
+    d is huge: a tie swings fully (0.5), a settled price (0 or 1) doesn't move.
+    """
+    z = norm.ppf(np.asarray(p, dtype=float))
+    tau = np.maximum(np.asarray(secs_left, dtype=float) / GAME_SECS, 1e-9)
+    d = points / (sigma * np.sqrt(tau))
+    return (norm.cdf(z + d) - norm.cdf(z - d)) / 2
+
+
 if __name__ == "__main__":
     # tip-off returns the prior exactly
     assert abs(stern_p(0, 2880, 0.345, 16) - 0.345) < 1e-9
@@ -93,5 +109,13 @@ if __name__ == "__main__":
     assert 0.07 < p_volatility(0.5, 1440) < 0.09
     assert 0.39 < p_volatility(0.5, 60) < 0.41
     assert p_volatility(0.95, 60) < p_volatility(0.5, 60)  # lopsided games move less
+
+    # basket sensitivity at sigma 22 (QuotingRule_Explainer table): tied Q1 3.7c,
+    # 62c with 5 min left 10.6c, tied with 2 min left 17.2c
+    sens = basket_sensitivity([0.5, 0.62, 0.5], [2700, 300, 120], 22)
+    assert np.allclose(sens, [0.037, 0.106, 0.172], atol=0.0005), sens
+    # at the buzzer a tied game is decided by one basket; a settled price can't move
+    assert np.isclose(basket_sensitivity(0.5, 0, 22), 0.5)
+    assert basket_sensitivity(1.0, 600, 22) == 0 and basket_sensitivity(0.0, 0, 22) == 0
 
     print(f"stern.py: all checks pass  (G6 halftime p = {half:.3f})")
