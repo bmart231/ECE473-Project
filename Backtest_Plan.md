@@ -62,6 +62,29 @@ changing anything else.
 - a 10¢ jump with the guard on → no fills after the trip
 - the same jump with the guard off → we're picked off for the jump size
 
+## Held-out games: what they are and why (added 11/17)
+
+Held-out games are games we set aside and **don't look at** while we build and tune the
+rule. We use them once at the end, as the final exam.
+
+**Why:** tuning means trying many settings on the same games and keeping the best. Part of
+that best score is luck: settings that happen to fit those particular games. A number
+reported from those games would overstate how good the rule is. The held-out games have
+never been seen, so their result is an honest estimate of how the rule does on new games.
+
+| | Games | Dates | Used for |
+|---|---|---|---|
+| **Training** | 803 | Apr 2025 – Jan 2026 | everything so far (σ fit, model vs. Kalshi, lead-lag, the comparison) and the tuning |
+| **Held-out** | 582 | Feb – Jun 2026 | **one** final run of the locked settings vs. the baseline |
+
+- **Kept apart in the code:** the held-out games have their own list
+  (`data/processed/games_heldout.parquet`) and their own download folder
+  (`data/processed/cache/heldout/`). Nothing in the comparison or tuning reads either one.
+- **Split by date:** the held-out games are later than everything we trained on, just
+  like the games a real bot would face.
+- **Run them once.** If we look at the held-out result, change settings and run again,
+  it's no longer a fair test.
+
 ## Experiments
 
 1. **Check on one game:** plot quotes, trades and fills for one game (like `figures/quoting/q_guard.png`).
