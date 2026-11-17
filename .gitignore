@@ -19,3 +19,6 @@ data/processed/cache/
 
 # personal Claude Code settings
 .claude/settings.local.json
+
+# run logs (backtest downloads etc.)
+data/processed/logs/
