@@ -16,6 +16,10 @@ games? The rule itself is described in `quoting_rule.md` and
 | Live log from 11/15 (`data/raw/live/`)                                | 8                      | Current season, so only good for a demo                                                     |
 | **Held-out test, Feb–Jun 2026**                                       | **0**                  | **Not downloaded:** `games.parquet` stops at 2026-01-31 on purpose (`batch_compare.WINDOW`) |
 
+**Update 11/17:** all of it is now downloaded: every play and every trade (with taker side)
+for all **803 training games** (`data/processed/cache/lead_lag/`) and all **582 held-out
+games** (`data/processed/cache/heldout/`, list in `data/processed/games_heldout.parquet`).
+
 **Gaps to fill before the backtest:**
 
 1. **Trades for the other ~650 training games.** `lead_lag.fetch_trades` already
